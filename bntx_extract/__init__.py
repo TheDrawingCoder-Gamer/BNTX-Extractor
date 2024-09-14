@@ -240,7 +240,6 @@ def readBNTX(f):
         info = BRTIInfo(bom)
         info.data(f, pos)
 
-        print(len(f))
         nameLen = struct.unpack(bom + 'H', f[info.nameAddr:info.nameAddr + 2])[0]
         name = bytes_to_string(f[info.nameAddr + 2:info.nameAddr + 2 + nameLen], nameLen)
 
