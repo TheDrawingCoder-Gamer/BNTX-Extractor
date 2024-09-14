@@ -25,7 +25,7 @@ def _swizzle(width, height, blkWidth, blkHeight, bpp, tileMode, alignment, size_
 
     for y in range(height):
         for x in range(width):
-            if tileMode == 0:
+            if tileMode == 1:
                 pos = y * pitch + x * bpp
 
             else:

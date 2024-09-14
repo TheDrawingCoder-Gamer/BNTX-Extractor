@@ -24,14 +24,16 @@
 
 import struct, sys
 
-import dds
+import bntx_extract.dds
 
+from PIL import Image
+import astc_decomp_faster as astc_decomp
 try:
     import pyximport; pyximport.install()
-    import swizzle_cy as swizzle
+    import bntx_extract.swizzle_cy as swizzle
 
 except:
-    import swizzle
+    import bntx_extract.swizzle
 
 DIV_ROUND_UP = swizzle.DIV_ROUND_UP
 
@@ -158,38 +160,41 @@ class NXHeader(struct.Struct):
 
 class BRTIInfo(struct.Struct):
     def __init__(self, bom):
-        super().__init__(bom + '4siq2b3H3I5i6I4i3q')
+        super().__init__(bom + '4sIQBBHHHIIIIIIIi24sII4BIQQQQQQQQ')
 
     def data(self, data, pos):
         (self.magic,
          self.size_,
          self.size_2,
-         self.tileMode,
-         self.dim,
          self.flags,
+         self.dim,
+         self.tileMode,
          self.swizzle,
          self.numMips,
-         self.unk18,
+         self.numFaces,
          self.format_,
-         self.unk20,
+         self.gpuAccessType,
          self.width,
          self.height,
-         self.unk2C,
-         self.numFaces,
+         self.depth,
+         self.arrayLen,
          self.sizeRange,
-         self.unk38,
-         self.unk3C,
-         self.unk40,
-         self.unk44,
-         self.unk48,
-         self.unk4C,
+         self.unk2,
          self.imageSize,
          self.alignment,
-         self.compSel,
-         self.type_,
+         self.red,
+         self.green,
+         self.blue,
+         self.alpha,
+         self.textureDim,
          self.nameAddr,
          self.parentAddr,
-         self.ptrsAddr) = self.unpack_from(data, pos)
+         self.ptrsAddr,
+         self.userDataAddr,
+         self.textureAddr,
+         self.textureViewAddr,
+         self.descSlotAddr,
+         self.userDataDictAddr) = self.unpack_from(data, pos)
 
 
 class TexInfo:
@@ -235,30 +240,25 @@ def readBNTX(f):
         info = BRTIInfo(bom)
         info.data(f, pos)
 
+        print(len(f))
         nameLen = struct.unpack(bom + 'H', f[info.nameAddr:info.nameAddr + 2])[0]
         name = bytes_to_string(f[info.nameAddr + 2:info.nameAddr + 2 + nameLen], nameLen)
 
         print("")
         print("Image " + str(i + 1) + " name: " + name)
 
-        compSel = []
+        compSel = [info.red, info.green, info.blue, info.alpha]
         compSels = {0: "0", 1: "1", 2: "Red", 3: "Green", 4: "Blue", 5: "Alpha"}
-        for i in range(4):
-            value = (info.compSel >> (8 * (3 - i))) & 0xff
-            if value == 0:
-                value = len(compSel) + 2
-
-            compSel.append(value)
 
         types = {0: "1D", 1: "2D", 2: "3D", 3: "Cubemap", 8: "CubemapFar"}
-        if info.type_ not in types:
-            types[info.type_] = "Unknown"
+        if info.textureDim not in types:
+            types[info.textureDim] = "Unknown"
 
         tileModes = {0: "TILING_MODE_PITCH", 1: "TILING_MODE_TILED"}
 
         print("TileMode: " + tileModes[info.tileMode])
-        print("Dimensions: " + str(info.dim))
-        print("Flags: " + str(info.flags))
+        # print("Dimensions: " + str(info.dim))
+        # print("Flags: " + str(info.flags))
         print("Swizzle: " + str(info.swizzle))
         print("Number of Mipmaps: " + str(info.numMips - 1))
 
@@ -271,7 +271,6 @@ def readBNTX(f):
         print("Width: " + str(info.width))
         print("Height: " + str(info.height))
         print("Number of faces: " + str(info.numFaces))
-        print("Size Range: " + str(info.sizeRange))
         print("Block Height: " + str(1 << info.sizeRange))
         print("Image Size: " + str(info.imageSize))
         print("Alignment: " + str(info.alignment))
@@ -279,7 +278,7 @@ def readBNTX(f):
         print("Channel 2: " + compSels[compSel[2]])
         print("Channel 3: " + compSels[compSel[1]])
         print("Channel 4: " + compSels[compSel[0]])
-        print("Image type: " + types[info.type_])
+        print("Image type: " + types[info.textureDim])
 
         dataAddr = struct.unpack(bom + 'q', f[info.ptrsAddr:info.ptrsAddr + 8])[0]
         mipOffsets = {0: 0}
@@ -300,8 +299,9 @@ def readBNTX(f):
         tex.sizeRange = info.sizeRange
         tex.compSel = compSel
         tex.alignment = info.alignment
-        tex.type = info.type_
+        tex.type = info.textureDim
         tex.data = f[dataAddr:dataAddr+info.imageSize]
+        tex.swizzle = info.swizzle
 
         textures.append(tex)
 
@@ -367,23 +367,13 @@ def saveTextures(textures):
             result = result[:size]
 
             if (tex.format >> 8) in ASTC_formats:
-                outBuffer = b''.join([
-                    b'\x13\xAB\xA1\x5C', blkWidth.to_bytes(1, "little"),
-                    blkHeight.to_bytes(1, "little"), b'\1',
-                    tex.width.to_bytes(3, "little"),
-                    tex.height.to_bytes(3, "little"), b'\1\0\0',
-                    result,
-                ])
-
-                with open(tex.name + ".astc", "wb+") as output:
-                    output.write(outBuffer)
-
+                is_srgb = (tex.format & 0xFF) == 0x06
+                image = Image.frombytes('RGBA', (tex.width, tex.height), result, 'astc', (blkWidth, blkHeight, is_srgb))
+                image.save(tex.name + ".png")
             else:
                 hdr = dds.generateHeader(1, tex.width, tex.height, format_, list(reversed(tex.compSel)), size, (tex.format >> 8) in BCn_formats)
-
-                with open(tex.name + ".dds", "wb+") as output:
-                    output.write(b''.join([hdr, result]))
-
+                image = Image.fromarray(b''.join([hdr, result]))
+                image.save(tex.name + ".png") 
         else:
             print("")
             print("Can't convert: " + tex.name)
